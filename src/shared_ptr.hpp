@@ -10,44 +10,68 @@
 
 namespace stel {
 
+class bad_weak_ptr : public std::exception {
+public:
+	const char* what() const noexcept override {
+		return "bad_weak_ptr";
+	}
+
+};
+
 template <typename T>
-struct default_delete {
-	void operator ()(T* ptr) const {
+struct default_deleter {
+	void operator ()(T* ptr) {
 		delete ptr;
 	}
 };
 
 template <typename T>
-struct default_delete<T[]> {
-	void operator ()(T* ptr) const {
+struct default_deleter<T[]> {
+	void operator ()(T* ptr) {
 		delete [] ptr;
 	}
 };
 
-// Control block for reference counting
+template <typename T>
+class shared_ptr;
+
+template <typename T>
+class weak_ptr;
+
 class control_block_base {
 public:
-	control_block_base() 
-		: shared_count_(1), weak_count_(1) { }
+	control_block_base() : shared_count_(1), weak_count_(1) { }
 	virtual ~control_block_base() = default;
 
-	void add_shared_ref() {
+	void add_shared() {
 		shared_count_.fetch_add(1, std::memory_order_relaxed);
 	}
 
+	bool try_add_shared_ref() {
+		long current = shared_count_.load(std::memory_order_relaxed);
+		while (current > 0) {
+			if (shared_count_.compare_exchange_weak(current, current + 1,
+						std::memory_order_acq_rel,
+						std::memory_order_relaxed)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void add_weak() {
+		weak_count_.fetch_add(1, std::memory_order_relaxed);
+	}
+
 	void release_shared() {
-		if (shared_count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+		if (shared_count_.fetch_sub(1, std::memory_order_relaxed) == 1) {
 			destroy_object();
 			release_weak();
 		}
 	}
 
-	void add_weak_ref() {
-		weak_count_.fetch_add(1, std::memory_order_relaxed);
-	}
-
 	void release_weak() {
-		if (shared_count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+		if (weak_count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
 			delete this;
 		}
 	}
@@ -64,19 +88,17 @@ public:
 		return shared_count() == 0;
 	}
 
-protected:
-	virtual void destroy_object() = 0;
 private:
+	virtual void destroy_object() = 0;
 	std::atomic<long> shared_count_;
 	std::atomic<long> weak_count_;
+
 };
 
-// Control block for pointers managed by shared_ptr
 template <typename T, typename Deleter>
 class control_block_ptr : public control_block_base {
 public:
-	control_block_ptr(T* ptr, Deleter deleter) 
-		: ptr_(ptr), deleter_(deleter) { }
+	control_block_ptr(T* ptr, Deleter deleter) : ptr_(ptr), deleter_(deleter) { }
 protected:
 	void destroy_object() override {
 		deleter_(ptr_);
@@ -87,7 +109,6 @@ private:
 	Deleter deleter_;
 };
 
-// Control block for pointers created by make_shared
 template <typename T>
 class control_block_obj : public control_block_base {
 public:
@@ -96,165 +117,239 @@ public:
 		new (get_object_ptr()) T(std::forward<Args>(args)...);
 	}
 	T* get_object_ptr() {
-		return reinterpret_cast<T*>(&storage_);
+		return reinterpret_cast<T*>(storage_);
 	}
 protected:
 	void destroy_object() override {
 		get_object_ptr()->~T();
 	}
 private:
-	typename std::aligned_storage<sizeof(T), alignof(T)>::type storage_;
+	alignas(T) unsigned char storage_[sizeof(T)];
 };
 
 template <typename T>
 class shared_ptr {
 public:
-	using element_type = T;
 
-	shared_ptr() noexcept : ptr_(nullptr), control_(nullptr) { }
-	shared_ptr(std::nullptr_t) noexcept : ptr_(nullptr), control_(nullptr) { }
-	explicit shared_ptr(T* ptr) : ptr_(ptr), control_(nullptr) {
-		if (ptr) {
-			try {
-				control_ = new control_block_ptr<T, default_delete<T>>(
-						ptr_, default_delete<T>());
-			} catch (...) {
-				delete ptr_;
-				throw;
-			}
+	shared_ptr() : ptr_(nullptr), control_(nullptr) { }
+	shared_ptr(std::nullptr_t) : ptr_(nullptr), control_(nullptr) { }
+
+	shared_ptr(T* ptr) 
+		: ptr_(ptr), control_(nullptr) 
+	{ 
+		try {
+			control_ = new control_block_ptr<T, default_deleter<T>>(
+					ptr_, default_deleter<T>());
+		} catch (...) {
+			delete ptr;
 		}
 	}
 
 	template <typename Deleter>
-	explicit shared_ptr(T* ptr, Deleter deleter) : ptr_(ptr), control_(nullptr) 
-	{
-		if (ptr) {
-			try {
-				control_ = new control_block_ptr<T, Deleter>(ptr_, std::move(deleter));
-			} catch (...) {
-				deleter(ptr_);
-				throw;
-			}
+	shared_ptr(T* ptr, Deleter deleter) 
+		: ptr_(ptr), control_(nullptr) 
+	{ 
+		try {
+			control_ = new control_block_ptr<T, Deleter>(ptr_, deleter);
+		} catch (...) {
+			deleter(ptr);
 		}
 	}
 
-	shared_ptr(const shared_ptr& other) noexcept 
-		: ptr_(other.ptr_), control_(other.control_) 
+	// Constructor from a weak_ptr
+	explicit shared_ptr(const weak_ptr<T>& weak) 
+		: ptr_(nullptr), control_(nullptr)
 	{
-		if (control_) {
-			control_->add_shared_ref();
+		if (weak.control_ && weak.control_->try_add_shared_ref()) {
+			ptr_ = weak.ptr_;
+			control_ = weak.control_;
+		} else {
+			throw bad_weak_ptr();
 		}
 	}
 
-	shared_ptr(shared_ptr&& other) noexcept 
-		: ptr_(std::exchange(other.ptr_, nullptr)), control_(std::exchange(other.control_, nullptr))
-	{
-	}
-	
-	// Copy constructor from compatible type
+	// constructor for the make_shared
 	template <typename U>
-	shared_ptr(const shared_ptr<U>& other) noexcept 
+	shared_ptr(control_block_base* control, U* ptr) noexcept 
+		: ptr_(ptr), control_(control) { }
+
+	shared_ptr(const shared_ptr& other) 
 		: ptr_(other.ptr_), control_(other.control_) 
 	{
-		static_assert(std::is_convertible<U*, T>::value, "U* must be convertible to T*");
 		if (control_) {
-			control_->add_shared_ref();
+			control_->add_shared();
 		}
 	}
 
-	// TODO: constructor from weak_ptr
-	//
-	~shared_ptr() {
-		if (control_) {
-			control_->release_shared();
-		}
-	}
-
-	shared_ptr& operator =(const shared_ptr& other) noexcept {
+	shared_ptr& operator =(const shared_ptr& other) {
 		shared_ptr(other).swap(*this);
 		return *this;
 	}
 
-	shared_ptr& operator =(shared_ptr&& other) noexcept {
+	shared_ptr(shared_ptr&& other) 
+		: ptr_(std::exchange(other.ptr_, nullptr)), control_(std::exchange(other.control_, nullptr)) 
+	{
+	}
+
+	shared_ptr& operator =(shared_ptr&& other) {
 		shared_ptr(std::move(other)).swap(*this);
 		return *this;
 	}
 
-	template <typename U>
-	shared_ptr& operator =(const shared_ptr<U>& other) noexcept {
-		static_assert(std::is_convertible<U*, T>::value, "U* must be convertible to T*");
-		shared_ptr(other).swap(*this);
-		return *this;
+	~shared_ptr() noexcept {
+		if (control_) {
+			control_->release_shared();
+		}
 	}
 
 	void reset() noexcept {
 		shared_ptr().swap(*this);
 	}
 
-	template <typename U>
-	void reset(U* ptr) {
-		shared_ptr(ptr).swap(*this);
-	}
-
-	template <typename U, typename Deleter>
-	void reset(U* ptr, Deleter deleter) {
-		shared_ptr(ptr, deleter).swap(*this);
-	}
-
-	void swap(shared_ptr& other) noexcept {
-		using std::swap;
-		std::swap(ptr_, other.ptr_);
-		std::swap(control_, other.control_);
-	}
-
-	T* get() const noexcept{
-		return ptr_;
-	}
-
-	T* operator ->() const noexcept {
-		return ptr_;
-	}
-
-	T& operator *() const noexcept {
-		return *ptr_;
-	}
-
-	T& operator[](std::size_t idx) const {
-		return ptr_[idx];
-	}
-
+	T& operator *() const { return *ptr_; }
+	T* operator ->() const { return ptr_; }
+	T* get() const { return ptr_; }
+	
+	operator bool() const { return ptr_ != nullptr; }
+	
 	long use_count() const noexcept {
 		return control_ ? control_->shared_count() : 0;
 	}
 
 	bool unique() const noexcept {
-		return use_count() == 1;
+		if (control_) 
+			return control_->shared_count() == 1;
+		return false;
 	}
 
-	explicit operator bool() const noexcept {
-		return ptr_ != nullptr;
+	void swap(shared_ptr& other) noexcept {
+		using std::swap;
+		std::swap(other.ptr_, ptr_);
+		std::swap(other.control_, control_);
 	}
 
-
-	// TODO: Comparison operators
-	// Constructor for make shared
-	template <typename U>
-	shared_ptr(control_block_obj<U>* control, U* ptr) noexcept 
-		: ptr_(ptr), control_(control)
-	{
-	}
 private:
 	template<typename U> friend class shared_ptr;
-	
+	template<typename U> friend class weak_ptr;
 
+	// Constructor for weak_ptr::lock() - assumes control block ref already incremented
+	shared_ptr(T* ptr, control_block_base* control) noexcept 
+		: ptr_(ptr), control_(control)
+	{ }
+
+	T* ptr_;
+	control_block_base* control_;
+};
+
+template <typename T>
+class weak_ptr {
+public:
+	using element_type = T;
+	weak_ptr() noexcept : ptr_(nullptr), control_(nullptr) { }
+
+	weak_ptr(const weak_ptr& other) noexcept 
+		: ptr_(other.ptr_), control_(other.control_)
+	{
+		if (control_) {
+			control_->add_weak();
+		}
+	}
+
+	weak_ptr(weak_ptr&& other) noexcept 
+		: ptr_(std::exchange(other.ptr_, nullptr))
+		, control_(std::exchange(other.control_, nullptr))
+	{ }
+
+	// constructor from shared_ptr
+	template <typename U>
+	weak_ptr(const shared_ptr<U>& shared) noexcept 
+		: ptr_(shared.ptr_), control_(shared.control_) {
+		static_assert(std::is_convertible_v<U*, T*>,
+				"U* must be convertible to T*");
+		if (control_) {
+			control_->add_weak();
+		}
+	}
+
+	// copy constructor from compitable types
+	template <typename U>
+	weak_ptr(const weak_ptr<U>& other) noexcept 
+		: ptr_(other.ptr_), control_(other.control_)
+	{
+		static_assert(std::is_convertible_v<U*, T*>,
+				"U* must be convertible to T*");
+		if (control_) {
+			control_->add_weak();
+		}
+	}
+
+	~weak_ptr() {
+		if (control_) {
+			control_->release_weak();
+		}
+	}
+
+	weak_ptr& operator =(const weak_ptr& other) noexcept {
+		weak_ptr(other).swap(*this);
+		return *this;
+	}
+
+	weak_ptr& operator =(weak_ptr&& other) noexcept {
+		weak_ptr(std::move(other)).swap(*this);
+		return *this;
+	}
+
+	// Assignment from shared_ptr
+	template <typename U>
+	weak_ptr& operator =(const shared_ptr<U>& other) noexcept {
+		weak_ptr(other).swap(*this);
+		return *this;
+	}
+
+	// Assignment from shared_ptr
+	template <typename U>
+	weak_ptr& operator =(const weak_ptr<U>& other) noexcept {
+		weak_ptr(other).swap(*this);
+		return *this;
+	}
+
+	void reset() noexcept {
+		weak_ptr().swap(*this);
+	}
+	
+	long use_count() noexcept {
+		return control_ ? control_->shared_count() : 0;
+	}
+
+	bool expired() const noexcept {
+		return use_count() == 0;
+	}
+
+	shared_ptr<T> lock() const noexcept {
+		if (control_ && control_->try_add_shared_ref()) {
+			return shared_ptr<T>(ptr_, control_);
+		}
+		return shared_ptr<T>();
+	}
+	
+	void swap(weak_ptr& other) noexcept {
+		using std::swap;
+		std::swap(other.ptr_, ptr_);
+		std::swap(other.control_, control_);
+	}
+
+private:
+
+	template<typename U> friend class shared_ptr;
+	template<typename U> friend class weak_ptr;
 
 	T* ptr_;
 	control_block_base* control_;
 };
 
 template <typename T, typename... Args>
-shared_ptr<T> make_shared(Args&&... args) {
-	auto* control = new control_block_obj<T>(std::forward<Args>(args)...);
+stel::shared_ptr<T> make_shared(Args&&... args) {
+	auto control = new control_block_obj<T>(std::forward<Args>(args)...);
 	try {
 		return shared_ptr<T>(control, control->get_object_ptr());
 	} catch (...) {
@@ -264,3 +359,4 @@ shared_ptr<T> make_shared(Args&&... args) {
 }
 
 }
+

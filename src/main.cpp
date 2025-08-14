@@ -2,6 +2,7 @@
 
 #include "shared_ptr.hpp"
 #include <memory>
+#include <vector>
 
 struct Foo
 {
@@ -60,130 +61,179 @@ public:
 
 int main() {
 
-	stel::shared_ptr<int> ptr = stel::make_shared<int>(2);
-	std::shared_ptr<int> std_ptr = std::make_shared<int>(42);
+	stel::shared_ptr<int> ptr(new int(42));
 
 	if (ptr.get()) {
-		std::cout << "Pointer is not null\n";
-		std::cout << ".get() is " << *ptr.get() << std::endl;
+		std::cout << "ptr.get(): " << *ptr.get() << '\n';
+	}
+	
+	std::cout << "ptr.use_count(): " << ptr.use_count() << '\n';
+	[[maybe_unused]] stel::shared_ptr<int> ptr_copy_1 = ptr;
+	[[maybe_unused]] stel::shared_ptr<int> ptr_copy_2 = ptr_copy_1;
+	[[maybe_unused]] stel::shared_ptr<int> ptr_copy_3 = ptr_copy_2;
+
+	std::cout << "Created 3 copies of ptr\n";
+	std::cout << "ptr.use_count(): " << ptr.use_count() << '\n';
+
+	{
+		std::cout << "Created additional copy inside a block\n";
+		[[maybe_unused]] stel::shared_ptr<int> ptr_copy_4 = ptr_copy_2;
+		std::cout << "ptr.use_count(): " << ptr.use_count() << '\n';
 	}
 
-	std::cout << "ptr: " << *ptr << std::endl;
-	std::cout << "std ptr: " << *std_ptr << std::endl;
+	std::cout << "After block\n";
+	std::cout << "ptr.use_count(): " << ptr.use_count() << '\n';
 
-	printf("printf ptr: %d\n", *ptr);
-	printf("printf std_ptr: %d\n", *std_ptr);
+	std::cout << "Reseting 2 pointers\n";
+	ptr_copy_3.reset();
+	ptr_copy_2.reset();
 
-	if (ptr) {
-		std::cout << "Stel pointer is not null\n";
-	}
+	std::cout << "ptr.use_count(): " << ptr.use_count() << '\n';
 
-	std::cout << "ptr count: " << ptr.use_count() << std::endl;
+	stel::shared_ptr<int> assigned_ptr(new int(666));
+	assigned_ptr = ptr_copy_1;
 
-	auto new_ptr = ptr;
+	std::cout << "After assignmet:\n";
+	std::cout << "assigned_ptr value: " << ((assigned_ptr) ? *assigned_ptr : 0) << '\n';
+	std::cout << "ptr_copy_1   value: " << ((ptr_copy_1) ? *ptr_copy_1 : 0) << '\n';
+	std::cout << "ptr.use_count(): " << ptr.use_count() << '\n';
 
-	std::cout << "ptr count: " << ptr.use_count() << std::endl;
+	std::cout << "Creating weak_ptr: " << std::endl;
+	stel::weak_ptr<int> weak_p = ptr_copy_1;
+	std::cout << "After creating weak ptr: " << std::endl;
+	std::cout << "ptr.use_count(): " << ptr.use_count() << '\n';
 
-	print_ptr(ptr);
-
-	std::cout << "ptr count: " << ptr.use_count() << std::endl;
-
-	std::cout << "std_ptr count: " << std_ptr.use_count() << std::endl;
-	print_std_ptr(std_ptr);
-	std::cout << "std_ptr count: " << std_ptr.use_count() << std::endl;
-
-	auto new_ptr_assig = stel::make_shared<int>(3);
-	new_ptr_assig = ptr;
-
-	std::cout << "ptr count after assignment: " << ptr.use_count() << std::endl;
-
-	std::shared_ptr<int> std_ptr1 = std::make_shared<int>(323);
-	auto std_ptr2 = std_ptr1;
-
-	std::cout << "count of std_ptr1: " << std_ptr1.use_count() << std::endl;
-
-	std::shared_ptr<int> std_ptr3 = std::make_shared<int>(323);
-	auto std_ptr4 = std_ptr3;
-
-	std::cout << "count of std_ptr3: " << std_ptr3.use_count() << std::endl;
-
-	std_ptr4 = std_ptr1;
-
-	std::cout << "after assignmet\n";
-
-	std::cout << "count of std_ptr1: " << std_ptr1.use_count() << std::endl;
-	std::cout << "count of std_ptr3: " << std_ptr3.use_count() << std::endl;
-
-	auto ppp1 = std_ptr1;
-	auto ppp2 = std_ptr1;
-	auto ppp3 = std_ptr1;
-
-	std::cout << "count of std_ptr1: " << std_ptr1.use_count() << std::endl;
-	std::cout << "count of std_ptr3: " << std_ptr3.use_count() << std::endl;
-
-	auto xxx1 = std_ptr3;
-	auto xxx2 = std_ptr3;
-
-	std::cout << "count of std_ptr1: " << std_ptr1.use_count() << std::endl;
-	std::cout << "count of std_ptr3: " << std_ptr3.use_count() << std::endl;
-	xxx2.reset();
-	xxx1.reset();
-	std::cout << "after reset\n";
-	std::cout << "count of std_ptr3: " << std_ptr3.use_count() << std::endl;
+	auto lck = weak_p.lock();
+	std::cout << "After lock weak ptr: " << std::endl;
+	std::cout << "ptr.use_count(): " << ptr.use_count() << '\n';
 
 
-	/// ---------------
-	///
-	std::cout << "stel ptr\n\n";
-	stel::shared_ptr<int> stel_ptr1 = stel::make_shared<int>(323);
-	auto stel_ptr2 = stel_ptr1;
 
-	std::cout << "count of stel_ptr1: " << stel_ptr1.use_count() << std::endl;
-
-	stel::shared_ptr<int> stel_ptr3 = stel::make_shared<int>(323);
-	auto stel_ptr4 = stel_ptr3;
-
-	std::cout << "count of stel_ptr3: " << stel_ptr3.use_count() << std::endl;
-	std::cout << "Assigning\n";
-	stel_ptr4 = stel_ptr1;
-
-	std::cout << "after assignmet\n";
-
-	std::cout << "count of stel_ptr1: " << stel_ptr1.use_count() << std::endl;
-	std::cout << "count of stel_ptr3: " << stel_ptr3.use_count() << std::endl;
-	//std::cout << "count of stel_ptr4: " << stel_ptr4.use_count() << std::endl;
-
-	auto pp1 = stel_ptr1;
-	auto pp2 = stel_ptr1;
-	auto pp3 = stel_ptr1;
-
-	std::cout << "count of stel_ptr1: " << stel_ptr1.use_count() << std::endl;
-	std::cout << "count of stel_ptr3: " << stel_ptr3.use_count() << std::endl;
-
-
-	auto xx1 = stel_ptr3;
-	auto xx2 = stel_ptr3;
-
-	std::cout << "count of stel_ptr1: " << stel_ptr1.use_count() << std::endl;
-	std::cout << "count of stel_ptr3: " << stel_ptr3.use_count() << std::endl;
-
-	stel::shared_ptr<Foo> p1 = stel::make_shared<Foo>(100);
-	   stel::shared_ptr<Foo> p2 = stel::make_shared<Foo>(200);
-	   auto print = [&]()
-	   {
-	       std::cout << " p1=" << (p1 ? p1->print() : "nullptr");
-	       std::cout << " p2=" << (p2 ? p2->print() : "nullptr") << '\n';  
-	   };
-	   print();
-
-	   p1.swap(p2);
-	   print();
-
-	   p1.reset();
-	   print();
-
-	   p1.swap(p2);
-	   print();
+	// stel::shared_ptr<int> ptr = stel::make_shared<int>(2);
+	// std::shared_ptr<int> std_ptr = std::make_shared<int>(42);
+	// std::vector<int> xxx2 = {1,2,3,4};
+	//
+	// if (ptr.get()) {
+	// 	std::cout << "Pointer is not null\n";
+	// 	std::cout << ".get() is " << *ptr.get() << std::endl;
+	// }
+	//
+	// std::cout << "ptr: " << *ptr << std::endl;
+	// std::cout << "std ptr: " << *std_ptr << std::endl;
+	//
+	// printf("printf ptr: %d\n", *ptr);
+	// printf("printf std_ptr: %d\n", *std_ptr);
+	//
+	// if (ptr) {
+	// 	std::cout << "Stel pointer is not null\n";
+	// }
+	//
+	// std::cout << "ptr count: " << ptr.use_count() << std::endl;
+	//
+	// auto new_ptr = ptr;
+	//
+	// std::cout << "ptr count: " << ptr.use_count() << std::endl;
+	//
+	// print_ptr(ptr);
+	//
+	// std::cout << "ptr count: " << ptr.use_count() << std::endl;
+	//
+	// std::cout << "std_ptr count: " << std_ptr.use_count() << std::endl;
+	// print_std_ptr(std_ptr);
+	// std::cout << "std_ptr count: " << std_ptr.use_count() << std::endl;
+	//
+	// auto new_ptr_assig = stel::make_shared<int>(3);
+	// new_ptr_assig = ptr;
+	//
+	// std::cout << "ptr count after assignment: " << ptr.use_count() << std::endl;
+	//
+	// std::shared_ptr<int> std_ptr1 = std::make_shared<int>(323);
+	// auto std_ptr2 = std_ptr1;
+	//
+	// std::cout << "count of std_ptr1: " << std_ptr1.use_count() << std::endl;
+	//
+	// std::shared_ptr<int> std_ptr3 = std::make_shared<int>(323);
+	// auto std_ptr4 = std_ptr3;
+	//
+	// std::cout << "count of std_ptr3: " << std_ptr3.use_count() << std::endl;
+	//
+	// std_ptr4 = std_ptr1;
+	//
+	// std::cout << "after assignmet\n";
+	//
+	// std::cout << "count of std_ptr1: " << std_ptr1.use_count() << std::endl;
+	// std::cout << "count of std_ptr3: " << std_ptr3.use_count() << std::endl;
+	//
+	// auto ppp1 = std_ptr1;
+	// auto ppp2 = std_ptr1;
+	// auto ppp3 = std_ptr1;
+	//
+	// std::cout << "count of std_ptr1: " << std_ptr1.use_count() << std::endl;
+	// std::cout << "count of std_ptr3: " << std_ptr3.use_count() << std::endl;
+	//
+	// auto xxx1 = std_ptr3;
+	// auto xxx2 = std_ptr3;
+	//
+	// std::cout << "count of std_ptr1: " << std_ptr1.use_count() << std::endl;
+	// std::cout << "count of std_ptr3: " << std_ptr3.use_count() << std::endl;
+	// xxx2.reset();
+	// xxx1.reset();
+	// std::cout << "after reset\n";
+	// std::cout << "count of std_ptr3: " << std_ptr3.use_count() << std::endl;
+	//
+	//
+	// /// ---------------
+	// ///
+	// std::cout << "stel ptr\n\n";
+	// stel::shared_ptr<int> stel_ptr1 = stel::make_shared<int>(323);
+	// auto stel_ptr2 = stel_ptr1;
+	//
+	// std::cout << "count of stel_ptr1: " << stel_ptr1.use_count() << std::endl;
+	//
+	// stel::shared_ptr<int> stel_ptr3 = stel::make_shared<int>(323);
+	// auto stel_ptr4 = stel_ptr3;
+	//
+	// std::cout << "count of stel_ptr3: " << stel_ptr3.use_count() << std::endl;
+	// std::cout << "Assigning\n";
+	// stel_ptr4 = stel_ptr1;
+	//
+	// std::cout << "after assignmet\n";
+	//
+	// std::cout << "count of stel_ptr1: " << stel_ptr1.use_count() << std::endl;
+	// std::cout << "count of stel_ptr3: " << stel_ptr3.use_count() << std::endl;
+	// //std::cout << "count of stel_ptr4: " << stel_ptr4.use_count() << std::endl;
+	//
+	// auto pp1 = stel_ptr1;
+	// auto pp2 = stel_ptr1;
+	// auto pp3 = stel_ptr1;
+	//
+	// std::cout << "count of stel_ptr1: " << stel_ptr1.use_count() << std::endl;
+	// std::cout << "count of stel_ptr3: " << stel_ptr3.use_count() << std::endl;
+	//
+	//
+	// auto xx1 = stel_ptr3;
+	// auto xx2 = stel_ptr3;
+	//
+	// std::cout << "count of stel_ptr1: " << stel_ptr1.use_count() << std::endl;
+	// std::cout << "count of stel_ptr3: " << stel_ptr3.use_count() << std::endl;
+	//
+	// stel::shared_ptr<Foo> p1 = stel::make_shared<Foo>(100);
+	//    stel::shared_ptr<Foo> p2 = stel::make_shared<Foo>(200);
+	//    auto print = [&]()
+	//    {
+	//        std::cout << " p1=" << (p1 ? p1->print() : "nullptr");
+	//        std::cout << " p2=" << (p2 ? p2->print() : "nullptr") << '\n';  
+	//    };
+	//    print();
+	//
+	//    p1.swap(p2);
+	//    print();
+	//
+	//    p1.reset();
+	//    print();
+	//
+	//    p1.swap(p2);
+	//    print();
 
 
     return 0;

@@ -6,6 +6,7 @@
 /CMakeCache.txt
 *.user
 *.suo
+*.cache
 
 *.vcxproj*
 *.code-workspace
